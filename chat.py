@@ -13,6 +13,7 @@ from web_llm.conversation import SeparatorStyle, conv_templates
 
 def _parse_args():
     args = argparse.ArgumentParser()
+    args.add_argument("--dtype", type=str, choices=["float32", "float16"], default="float32")
     args.add_argument("--device-name", type=str, default="auto")
     args.add_argument("--debug-dump", action="store_true", default=False)
     args.add_argument("--artifact-path", type=str, default="dist")
@@ -62,7 +63,7 @@ class ModelWrapper:
                 logits = self.model(tokens[:, cur_pos - 1 : cur_pos], cur_pos)
             logits = logits[:, -1, :]
             if temperature > 0:
-                probs = torch.softmax(logits / temperature, dim=-1)
+                probs = torch.softmax((logits / temperature).to(torch.float32), dim=-1)
                 next_token = sample_top_p(probs, top_p)
             else:
                 next_token = torch.argmax(logits, dim=-1)
@@ -146,7 +147,7 @@ def get_tvm_model(args):
             self.kv_cache = []
             for i in range(64):  # num_layer
                 kv_cache = fcreate_cache(
-                    tvm.nd.empty((1, 32, 128), device=device, dtype="float32"),
+                    tvm.nd.empty((1, 32, 128), device=device, dtype=args.dtype),
                     tvm.runtime.ShapeTuple([32, 32, 128]),
                     0
                 )

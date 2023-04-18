@@ -18,6 +18,7 @@ from web_llm import utils
 
 def _parse_args():
     args = argparse.ArgumentParser()
+    args.add_argument("--dtype", type=str, choices=["float32", "float16"], default="float32")
     args.add_argument("--device-name", type=str, default="auto")
     args.add_argument("--debug-dump", action="store_true", default=False)
     args.add_argument("--artifact-path", type=str, default="dist")
@@ -56,12 +57,12 @@ class LibCompare(LibCompareVMInstrument):
             print(f"Time-eval result {name} on {self.device}: {res}")
 
 
-def create_kv_caches(device):
+def create_kv_caches(device, dtype):
     kv_caches = []
     fcreate_cache = tvm.get_global_func("vm.builtin.attention_kv_cache_create")
     for i in range(64):
         kv_cache = fcreate_cache(
-            tvm.nd.empty((1, 32, 128), device=device, dtype="float32"),
+            tvm.nd.empty((1, 32, 128), device=device, dtype=dtype),
             tvm.runtime.ShapeTuple([6, 32, 128]),
             0,
         )
@@ -87,7 +88,7 @@ def deploy_to_pipeline(args) -> None:
     first_sampled_token = tvm.nd.array(np.array([[6234]]).astype("int32"), device)
     seq_len_shape = tvm.runtime.ShapeTuple([inputs.shape[1]])
     second_seq_len_shape = tvm.runtime.ShapeTuple([inputs.shape[1] + 1])
-    kv_caches = create_kv_caches(device)
+    kv_caches = create_kv_caches(device, args.dtype)
     print("Running inference...")
     start = time.time()
     logits, kv_caches = vm["encoding"](inputs, seq_len_shape, kv_caches, const_params)
@@ -117,7 +118,7 @@ def deploy_to_pipeline(args) -> None:
         profile_file_path = os.path.join(args.artifact_path, "debug", "evaluate_profile.log")
         with open(profile_file_path, "w") as file:
             with redirect_stdout(file):
-                kv_caches = create_kv_caches(device)
+                kv_caches = create_kv_caches(device, args.dtype)
                 print("======================= Starts Encoding =======================")
                 logits, kv_caches = vm["encoding"](inputs, seq_len_shape, kv_caches, const_params)
                 print("======================= Starts Decoding =======================")

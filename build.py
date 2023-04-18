@@ -18,6 +18,7 @@ from web_llm.relax_model import llama
 def _parse_args():
     args = argparse.ArgumentParser()
     args.add_argument("--model", type=str, default="vicuna-7b")
+    args.add_argument("--dtype", type=str, choices=["float32", "float16"], default="float32")
     args.add_argument("--target", type=str, default="auto")
     args.add_argument("--db-path", type=str, default="log_db/")
     args.add_argument("--artifact-path", type=str, default="dist")
@@ -94,12 +95,14 @@ def get_models(config, model):
     else:
         raise ValueError(f"Model {model} not supported")
 
-def get_params(config, model):
+
+def get_params(config, model, target: tvm.target.Target):
     import numpy as np
 
+    device = tvm.device(target.kind.default_keys[0])
     param_list = []
     for _, param in model.named_parameters():
-        param_list.append(tvm.nd.array(param.detach().cpu().numpy(), tvm.cpu()))
+        param_list.append(tvm.nd.array(param.detach().cpu().numpy().astype(config.dtype), device))
 
     ############ Rotary embedding constants ############
     head_dim = config.hidden_size / config.num_attention_heads
@@ -110,8 +113,8 @@ def get_params(config, model):
     t = np.arange(config.max_sequence_length, dtype=inv_freq.dtype)
     freqs = np.einsum("i,j->ij", t, inv_freq)
     emb = np.concatenate((freqs, freqs), axis=-1)
-    param_list.append(tvm.nd.array(np.cos(emb), tvm.cpu()))
-    param_list.append(tvm.nd.array(np.sin(emb), tvm.cpu()))
+    param_list.append(tvm.nd.array(np.cos(emb).astype(config.dtype), device))
+    param_list.append(tvm.nd.array(np.sin(emb).astype(config.dtype), device))
     ############ End ############
 
     return param_list
@@ -123,7 +126,7 @@ def mod_transform_before_build(
     """First-stage: Legalize ops and trace"""
     model_names = ["encoding", "decoding", "encoding_without_cache"]
 
-    mod = web_llm.transform.GroupQuantize(group_size=32, sym=False)(mod)
+    mod = web_llm.transform.GroupQuantize(group_size=32, sym=False, dtype=args.dtype)(mod)
     mod = web_llm.transform.FuseTransposeMatmul()(mod)
 
     # NOTE: enable pipeline after fusion getting fixed.
@@ -142,7 +145,7 @@ def mod_transform_before_build(
 
     debug_dump_script(mod_transform, "mod_lift_params.py", args)
 
-    new_params = utils.transform_params(mod_transform, model_params)
+    new_params = utils.transform_params(mod_transform, model_params, args.target)
     utils.save_params(new_params, args.artifact_path)
     return mod_deploy
 
@@ -182,10 +185,11 @@ if __name__ == "__main__":
     use_cache = ARGS.use_cache and os.path.isfile(cache_path)
     if not use_cache:
         from transformers import AutoModelForCausalLM
+
         hf_model = AutoModelForCausalLM.from_pretrained(ARGS.model_path)
-        config = utils.get_config(hf_model.config, ARGS.model)
+        config = utils.get_config(hf_model.config, ARGS.model, ARGS.dtype)
         mod = get_models(config, ARGS.model)
-        params = get_params(config, hf_model)
+        params = get_params(config, hf_model, ARGS.target)
         del hf_model
         mod = mod_transform_before_build(mod, params, ARGS)
         with open(cache_path, "wb") as outfile:

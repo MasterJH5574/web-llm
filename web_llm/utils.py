@@ -5,11 +5,12 @@ import tvm.testing
 from tvm import meta_schedule as ms
 
 
-def get_config(hf_config, model):
+def get_config(hf_config, model, dtype: str):
     if "vicuna" in model or "llama" in model:
         from .relax_model.llama import LlamaConfig as RelaxConfig
 
         return RelaxConfig(
+            dtype=dtype,
             max_sequence_length=hf_config.max_sequence_length,
             vocab_size=hf_config.vocab_size,
             hidden_size=hf_config.hidden_size,
@@ -61,7 +62,7 @@ def split_transform_deploy_mod(
 
 
 def transform_params(
-    mod_transform: tvm.IRModule, model_params: List[tvm.nd.NDArray]
+    mod_transform: tvm.IRModule, model_params: List[tvm.nd.NDArray], target: tvm.target.Target
 ) -> List[tvm.nd.NDArray]:
     transform_func_name = None
     for gv, func in mod_transform.functions.items():
@@ -69,8 +70,10 @@ def transform_params(
             transform_func_name = gv.name_hint
     assert transform_func_name is not None
 
-    ex = relax.build(mod_transform, target="llvm")
-    vm = relax.vm.VirtualMachine(ex, tvm.cpu())
+    with target:
+        mod_transform = tvm.tir.transform.DefaultGPUSchedule()(mod_transform)
+    ex = relax.build(mod_transform, target=target)
+    vm = relax.vm.VirtualMachine(ex, tvm.device(target.kind.default_keys[0]))
     res = vm[transform_func_name](model_params)
     return res
 
