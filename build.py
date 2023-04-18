@@ -138,7 +138,7 @@ def mod_transform_before_build(
     mod = relax.transform.FuseOps()(mod)
     mod = relax.transform.FuseTIR()(mod)
 
-    mod = web_llm.transform.FuseDecodeMatmulEwise()(mod)
+    mod = web_llm.transform.FuseDecodeMatmulEwise(args.dtype)(mod)
     mod = relax.transform.DeadCodeElimination(model_names)(mod)
     mod = relax.transform.LiftTransformParams()(mod)
     mod_transform, mod_deploy = utils.split_transform_deploy_mod(mod, model_names)
