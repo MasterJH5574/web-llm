@@ -142,15 +142,9 @@ def get_tvm_model(args):
 
     class Model:
         def new_cache(self):
-            fcreate_cache = tvm.get_global_func("vm.builtin.attention_kv_cache_create")
-            self.kv_cache = []
-            for i in range(64):  # num_layer
-                kv_cache = fcreate_cache(
-                    tvm.nd.empty((1, 32, 128), device=device, dtype="float32"),
-                    tvm.runtime.ShapeTuple([32, 32, 128]),
-                    0
-                )
-                self.kv_cache.append(kv_cache)
+            if self.kv_cache is not None:
+                del self.kv_cache
+            self.kv_cache = None
 
         def __init__(self) -> None:
             self.kv_cache = None
@@ -163,7 +157,9 @@ def get_tvm_model(args):
                 self.new_cache()
             inputs = tvm.nd.array(inputs.numpy(), device=device)
             seq_len_shape = tvm.runtime.ShapeTuple([cur_pos])
-            if inputs.shape[1] > 1:
+            if self.kv_cache is None:
+                logits, kv_cache = vm["encoding_without_cache"](inputs, seq_len_shape, const_params)
+            elif inputs.shape[1] > 1:
                 logits, kv_cache = vm["encoding"](
                     inputs, seq_len_shape, self.kv_cache, const_params
                 )

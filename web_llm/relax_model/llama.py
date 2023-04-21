@@ -221,43 +221,62 @@ class LlamaAttention(nn.Module):
             [kv_states_shape[0], kv_seq_len, kv_states_shape[2], kv_states_shape[3]]
         )
         kv_cache_shape = R.shape([kv_seq_len, kv_states_shape[2], kv_states_shape[3]])
-        if past_key_value is not None:
-            squeezed_key = nn.emit(squeeze(key_states, axis=0))
-            squeezed_value = nn.emit(squeeze(value_states, axis=0))
-            k_cache, v_cache = past_key_value
-            f_kv_cache_append = relax.extern("vm.builtin.attention_kv_cache_append")
+
+        squeezed_key = nn.emit(squeeze(key_states, axis=0))
+        squeezed_value = nn.emit(squeeze(value_states, axis=0))
+
+        if past_key_value is None:
+            f_kv_cache_create = relax.extern("vm.builtin.attention_kv_cache_create")
             k_cache = nn.emit(
                 relax.Call(
-                    f_kv_cache_append,
-                    args=[k_cache, squeezed_key],
+                    f_kv_cache_create,
+                    args=[squeezed_key, kv_cache_shape, relax.PrimValue(0)],
                     sinfo_args=[relax.ObjectStructInfo()],
                 )
             )
             v_cache = nn.emit(
                 relax.Call(
-                    f_kv_cache_append,
-                    args=[v_cache, squeezed_value],
+                    f_kv_cache_create,
+                    args=[squeezed_value, kv_cache_shape, relax.PrimValue(0)],
                     sinfo_args=[relax.ObjectStructInfo()],
                 )
             )
             past_key_value = (k_cache, v_cache)
-            f_kv_cache_view = relax.extern("vm.builtin.attention_kv_cache_view")
-            k_cache = nn.emit(
-                relax.Call(
-                    f_kv_cache_view,
-                    args=[k_cache, kv_cache_shape],
-                    sinfo_args=[R.Tensor(kv_cache_shape, kv_states_dtype)],
-                )
+
+        k_cache, v_cache = past_key_value
+        f_kv_cache_append = relax.extern("vm.builtin.attention_kv_cache_append")
+        k_cache = nn.emit(
+            relax.Call(
+                f_kv_cache_append,
+                args=[k_cache, squeezed_key],
+                sinfo_args=[relax.ObjectStructInfo()],
             )
-            v_cache = nn.emit(
-                relax.Call(
-                    f_kv_cache_view,
-                    args=[v_cache, kv_cache_shape],
-                    sinfo_args=[R.Tensor(kv_cache_shape, kv_states_dtype)],
-                )
+        )
+        v_cache = nn.emit(
+            relax.Call(
+                f_kv_cache_append,
+                args=[v_cache, squeezed_value],
+                sinfo_args=[relax.ObjectStructInfo()],
             )
-            key_states = nn.emit(reshape(k_cache, kv_states_shape))
-            value_states = nn.emit(reshape(v_cache, kv_states_shape))
+        )
+        past_key_value = (k_cache, v_cache)
+        f_kv_cache_view = relax.extern("vm.builtin.attention_kv_cache_view")
+        k_cache = nn.emit(
+            relax.Call(
+                f_kv_cache_view,
+                args=[k_cache, kv_cache_shape],
+                sinfo_args=[R.Tensor(kv_cache_shape, kv_states_dtype)],
+            )
+        )
+        v_cache = nn.emit(
+            relax.Call(
+                f_kv_cache_view,
+                args=[v_cache, kv_cache_shape],
+                sinfo_args=[R.Tensor(kv_cache_shape, kv_states_dtype)],
+            )
+        )
+        key_states = nn.emit(reshape(k_cache, kv_states_shape))
+        value_states = nn.emit(reshape(v_cache, kv_states_shape))
 
         query_states = nn.emit(permute_dims(query_states, [0, 2, 1, 3]))
         key_states = nn.emit(permute_dims(key_states, [0, 2, 1, 3]))
@@ -547,9 +566,9 @@ def create_encoding_func_without_cache(bb: relax.BlockBuilder, config: LlamaConf
         input_ids = nn.Placeholder((bsz, seq_len), dtype="int32", name="input_ids")
         all_seq_len_shape = relax.Var("all_seq_len", relax.ShapeStructInfo((seq_len,)))
         with bb.dataflow():
-            logits, _ = model(input_ids, all_seq_len_shape)
+            logits, key_value_cache = model(input_ids, all_seq_len_shape, past_key_values=None)
             params = [input_ids, all_seq_len_shape] + model.parameters()
-            gv = bb.emit_output(logits)
+            gv = bb.emit_output((logits, relax.Tuple(key_value_cache)))
         bb.emit_func_output(gv, params)
 
     mod = bb.get()
